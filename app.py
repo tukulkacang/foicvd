@@ -36,7 +36,7 @@ contract_params = {
     "CL1": {"name": "Crude Oil", "inverse": False},
 }
 
-# ====================== SYSTEM PROMPT (Paling Penting) ======================
+# ====================== SYSTEM PROMPT ======================
 SYSTEM_PROMPT = """
 Kamu adalah AI Master Analyst Futures OI + CVD Lab yang mengikuti persis framework dari https://tukulkacang.github.io/futures-oi-cvd-lab/
 
@@ -59,11 +59,10 @@ Analisa screenshot TradingView dengan teliti, lalu tentukan setup yang paling co
 - Short Build Up: Harga ↓ + OI ↑ (fresh shorts)
 - Long Unwinding: Harga ↓ + OI ↓
 - Short Covering: Harga ↑ + OI ↓
-- Perhatikan kekuatan CVD (Cumulative Volume Delta)
-- Untuk simbol inverse (6C1,6S1,6J1): price naik = base currency (CAD/CHF/JPY) menguat
+- Perhatikan kekuatan CVD
 
 Tugasmu:
-- Pilih **satu setup** yang paling matching
+- Pilih satu setup yang paling matching
 - Berikan Entry, SL, TP berdasarkan level harga di chart
 - Signal hanya: BUY / SELL / WAIT
 
@@ -71,7 +70,7 @@ Tugasmu:
 {
   "setup_id": 1,
   "market_state": "Strong Bullish Trend",
-  "logic_match": "Penjelasan singkat kenapa cocok dengan setup ini",
+  "logic_match": "Penjelasan singkat kenapa cocok",
   "trading_setup": {
     "signal": "BUY",
     "entry": "1.0850",
@@ -79,24 +78,25 @@ Tugasmu:
     "tp": "1.0940"
   },
   "checklist_match": "4/5 kondisi terpenuhi",
-  "risk_note": "Catatan risiko dan invalidasi",
-  "inverse_note": "Penjelasan jika simbol inverse"
+  "risk_note": "Catatan risiko",
+  "inverse_note": "Penjelasan jika inverse"
 }
 """
 
-# ====================== FUNGSI ANALISA ======================
+# ====================== FUNGSI ANALISA (FIXED) ======================
 def analyze_chart(image_file, symbol):
     img = Image.open(image_file)
     
-    user_prompt = f"""
-Simbol yang dianalisa: {symbol} - {contract_params.get(symbol, {}).get('name', symbol)}
-Mohon analisa chart ini sesuai 10 setup di atas.
+    prompt_text = f"""
+Simbol: {symbol} - {contract_params.get(symbol, {}).get('name', symbol)}
+Analisa chart ini sesuai 10 setup OI+CVD Lab di atas.
 """
 
+    # Format yang benar untuk SDK terbaru
     contents = [
-        {"role": "user", "parts": [SYSTEM_PROMPT]},
-        {"role": "user", "parts": [user_prompt]},
-        {"role": "user", "parts": [img]}
+        SYSTEM_PROMPT,
+        prompt_text,
+        img
     ]
     
     response = client.models.generate_content(
@@ -115,7 +115,6 @@ def main():
     st.title("📊 OI + CVD Futures Lab AI")
     st.caption("Cak To Aja - Versi AI • Mengikuti tukulkacang.github.io")
 
-    # Symbol Selector
     symbol = st.selectbox(
         "🎯 Pilih Instrumen",
         options=list(contract_params.keys()),
@@ -135,7 +134,7 @@ def main():
                                        type=['png', 'jpg', 'jpeg', 'webp'])
 
         if uploaded_file:
-            st.image(uploaded_file, caption="Chart yang diupload", use_container_width=True)
+            st.image(uploaded_file, caption="Chart yang diupload", width="stretch")
 
     with col2:
         st.header("🤖 AI Analysis Result")
@@ -145,7 +144,6 @@ def main():
                     with st.spinner("AI sedang menganalisa chart..."):
                         result = analyze_chart(uploaded_file, symbol)
 
-                    # Tampilkan Hasil
                     st.success(f"**{result.get('market_state', 'Analysis Complete')}**")
 
                     signal = result['trading_setup']['signal']
@@ -161,27 +159,21 @@ def main():
                     c2.metric("STOP LOSS", result['trading_setup'].get('sl', '-'))
                     c3.metric("TAKE PROFIT", result['trading_setup'].get('tp', '-'))
 
-                    st.markdown("**Logic Match:**")
-                    st.info(result.get('logic_match', ''))
-
-                    st.markdown("**Checklist Match:**")
-                    st.write(result.get('checklist_match', ''))
+                    st.info(f"**Logic:** {result.get('logic_match', '')}")
+                    st.write(f"**Checklist:** {result.get('checklist_match', '')}")
 
                     if result.get('risk_note'):
                         st.warning(f"**Risk Note:** {result['risk_note']}")
-
                     if result.get('inverse_note'):
                         st.error(f"**Inverse Note:** {result['inverse_note']}")
 
-                except json.JSONDecodeError:
-                    st.error("AI tidak mengembalikan format JSON yang valid.")
                 except Exception as e:
-                    st.error(f"Terjadi error: {str(e)}")
+                    st.error(f"Error: {str(e)}")
         else:
             st.info("⬆️ Upload screenshot chart terlebih dahulu")
 
     st.markdown("---")
-    st.caption("AI ini dilatih mengikuti 10 setup resmi dari Futures OI + CVD Lab")
+    st.caption("AI ini dirancang mengikuti 10 setup resmi Futures OI + CVD Lab")
 
 if __name__ == "__main__":
     main()
