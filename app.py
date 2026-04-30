@@ -1,145 +1,109 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
 from PIL import Image
 import os
 import json
 from dotenv import load_dotenv
 
-# 1. SETUP KONFIGURASI
+# 1. SETUP KONFIGURASI 2026
 load_dotenv()
 st.set_page_config(
-    page_title="Cak To's Order Flow AI", 
+    page_title="Cak To's Order Flow AI v3", 
     page_icon="🎯", 
     layout="wide"
 )
 
-import streamlit as st
-import google.generativeai as genai
-import os
-from PIL import Image
-import json
-
-# ==========================================
-# PERBAIKAN LOGIKA PEMANGGILAN KEY (NILAI 10/10)
-# ==========================================
-
-# 1. Cek di Secrets Streamlit (Untuk Online)
-if "GEMINI_API_KEY" in st.secrets:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-# 2. Cek di Environment Variable (Untuk Lokal)
-elif os.getenv("GEMINI_API_KEY"):
-    API_KEY = os.getenv("GEMINI_API_KEY")
-else:
-    API_KEY = None
-
-# Jika Key tidak ditemukan, tampilkan instruksi alih-alih error mentah
+# Ambil API Key dari Secrets
+API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 if not API_KEY:
-    st.warning("⚠️ API Key tidak terdeteksi di Secrets Streamlit.")
-    st.info("Pastikan di Dashboard Streamlit > Settings > Secrets, kamu sudah tulis: GEMINI_API_KEY = 'KUNCI_KAMU'")
+    st.error("API Key belum diset di Secrets!")
     st.stop()
 
-genai.configure(api_key=API_KEY)
+# Inisialisasi Client Baru (SDK 2026)
+client = genai.Client(api_key=API_KEY)
 
-# 2. SYSTEM PROMPT (Logika Persis tukulkacang.github.io)
+# 2. SYSTEM PROMPT (Logika Tetap Sesuai tukulkacang.github.io)
 SYSTEM_PROMPT = """
-Kamu adalah AI Pakar Analisis Order Flow yang mengacu pada metodologi 'Futures OI-CVD Lab'. 
-Tugasmu adalah membedah screenshot TradingView berdasarkan 3 indikator utama:
+Kamu adalah AI Pakar Analisis Order Flow (Gemini 3 Flash). 
+Analisa screenshot TradingView berdasarkan parameter 'Futures OI-CVD Lab':
 
-ATURAN PARAMETER (WAJIB):
-1. Long Build Up: Harga Naik + Open Interest (OI) Naik (Tangga Hijau). Sinyal: Bullish/Buy.
-2. Short Build Up: Harga Turun + Open Interest (OI) Naik (Tangga Hijau). Sinyal: Bearish/Sell.
-3. Long Unwinding: Harga Turun + OI Menurun (Tangga Merah). Sinyal: Longs Closing/Bearish Reversal.
-4. Short Covering: Harga Naik + OI Menurun (Tangga Merah). Sinyal: Shorts Closing/Short Squeeze.
-5. Absorption: CVD bergerak agresif (ekstrim) tapi harga bergerak berlawanan atau stagnan.
-6. Exhaustion: Harga mencapai high/low baru tapi OI dan CVD tidak mendukung (divergence).
+LOGIKA UTAMA:
+- Long Build Up: Harga Naik + OI Naik (Tangga Hijau).
+- Short Build Up: Harga Turun + OI Naik (Tangga Hijau).
+- Long Unwinding: Harga Turun + OI Turun (Tangga Merah).
+- Short Covering: Harga Naik + OI Turun (Tangga Merah).
+- Absorption: CVD ekstrim tapi harga stagnan/berlawanan.
 
-TUGAS TAMBAHAN:
-- Baca angka harga di sumbu kanan chart untuk menentukan level teknikal.
-- Berikan rekomendasi Entry, SL, dan TP berdasarkan struktur candlestick terbaru.
+TUGAS: Berikan estimasi Entry, SL, dan TP berdasarkan angka di sumbu kanan chart.
 
-OUTPUT FORMAT (JSON):
+OUTPUT FORMAT (Wajib JSON):
 {
   "market_state": "...",
-  "logic_match": "Penjelasan kenapa kondisi ini sesuai dengan parameter OI-CVD Lab",
-  "checklist": {
-    "price_action": "Naik/Turun/Side",
-    "oi_status": "Rising/Falling",
-    "cvd_status": "Aggressive/Passive"
-  },
+  "logic_match": "...",
   "trading_setup": {
     "signal": "BUY/SELL/WAIT",
-    "entry": "Angka estimasi harga",
-    "sl": "Angka stop loss",
-    "tp": "Angka take profit"
+    "entry": "...",
+    "sl": "...",
+    "tp": "..."
   },
-  "risk_note": "Catatan khusus tentang penyerapan (absorption) atau squeeze"
+  "risk_note": "..."
 }
 """
 
-# 3. FUNGSI ANALISA
+# 3. FUNGSI ANALISA (Migrasi ke Gemini 3 Flash)
 def analyze_chart(image_file):
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config={
-            "temperature": 0.1, # Sangat rendah agar patuh pada aturan
+    img = Image.open(image_file)
+    
+    # Menggunakan model gemini-3-flash yang lebih baru dan akurat
+    response = client.models.generate_content(
+        model="gemini-3-flash",
+        contents=[SYSTEM_PROMPT, img],
+        config={
             "response_mime_type": "application/json",
+            "temperature": 0.1
         }
     )
-    
-    img = Image.open(image_file)
-    response = model.generate_content([SYSTEM_PROMPT, img])
     return json.loads(response.text)
 
-# 4. UI STREAMLIT
+# 4. UI STREAMLIT (Fix Deprecated use_container_width)
 def main():
-    st.title("🎯 AI Order Flow Analyst")
-    st.caption("Based on Futures OI-CVD Lab Methodology")
+    st.title("🎯 AI Order Flow Analyst v3")
+    st.caption("Cak To Aja - 2026 Edition") # Identitas user
     st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
         st.header("📤 Upload Chart")
-        uploaded_file = st.file_uploader("Upload screenshot dari TradingView (Pastikan OI & CVD terlihat)", type=['png', 'jpg', 'jpeg'])
+        uploaded_file = st.file_uploader("Upload screenshot TradingView", type=['png', 'jpg', 'jpeg'])
         
         if uploaded_file:
-            st.image(uploaded_file, caption="Chart Original", use_container_width=True)
+            # Update 2026: use_container_width diganti width='stretch'
+            st.image(uploaded_file, caption="Chart Original", width='stretch')
 
     with col2:
-        st.header("🤖 AI Recommendation")
+        st.header("🤖 Gemini 3 Analysis")
         if uploaded_file:
             if st.button("Jalankan Analisa 10/10", type="primary"):
                 try:
-                    with st.spinner("Mencocokkan parameter OI-CVD..."):
+                    with st.spinner("Memproses dengan Gemini 3 Flash..."):
                         result = analyze_chart(uploaded_file)
                     
-                    # Status Box
                     st.success(f"**STATUS: {result['market_state']}**")
-                    st.write(f"_{result['logic_match']}_")
                     
-                    # Checklist
-                    st.markdown("### 📋 Parameter Check")
-                    st.json(result['checklist'])
-
-                    # SIGNAL BOX (ENTRY, SL, TP)
-                    st.markdown("---")
-                    setup = result['trading_setup']
-                    color = "green" if "BUY" in setup['signal'] else "red" if "SELL" in setup['signal'] else "orange"
-                    
-                    st.markdown(f"### ⚡ SIGNAL: :{color}[{setup['signal']}]")
+                    st.markdown("### ⚡ SIGNAL: " + result['trading_setup']['signal'])
                     
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("ENTRY", setup['entry'])
-                    c2.metric("STOP LOSS", setup['sl'], delta_color="inverse")
-                    c3.metric("TAKE PROFIT", setup['tp'])
+                    c1.metric("ENTRY", result['trading_setup']['entry'])
+                    c2.metric("STOP LOSS", result['trading_setup']['sl'])
+                    c3.metric("TAKE PROFIT", result['trading_setup']['tp'])
 
                     st.info(f"**Risk Note:** {result['risk_note']}")
 
                 except Exception as e:
-                    st.error(f"Gagal membedah gambar. Pastikan label OI dan CVD terbaca jelas.")
-                    st.write(e)
+                    st.error(f"Error: {e}")
         else:
-            st.info("Upload chart-mu dulu bro untuk melihat keajaiban.")
+            st.info("Silakan upload chart dulu, bro.")
 
 if __name__ == "__main__":
     main()
