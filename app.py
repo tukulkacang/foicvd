@@ -79,7 +79,7 @@ OUTPUT FORMAT (JSON):
 # 3. FUNGSI ANALISA
 def analyze_chart(image_file):
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="models/gemini-1.5-flash",
         generation_config={
             "temperature": 0.1, # Sangat rendah agar patuh pada aturan
             "response_mime_type": "application/json",
