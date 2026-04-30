@@ -56,7 +56,7 @@ def analyze_chart(image_file):
     
     # Menggunakan model gemini-3-flash yang lebih baru dan akurat
     response = client.models.generate_content(
-        model="gemini-3-flash-001",
+        model="gemini-3-flash-preview",
         contents=[SYSTEM_PROMPT, img],
         config={
             "response_mime_type": "application/json",
