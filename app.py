@@ -5,105 +5,183 @@ import os
 import json
 from dotenv import load_dotenv
 
-# 1. SETUP KONFIGURASI 2026
+# ====================== SETUP ======================
 load_dotenv()
+
 st.set_page_config(
-    page_title="Cak To's Order Flow AI v3", 
-    page_icon="🎯", 
+    page_title="Cak To's OI + CVD Lab AI",
+    page_icon="📊",
     layout="wide"
 )
 
-# Ambil API Key dari Secrets
+# Ambil API Key
 API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 if not API_KEY:
-    st.error("API Key belum diset di Secrets!")
+    st.error("❌ API Key Gemini belum diset di .env atau Secrets!")
     st.stop()
 
-# Inisialisasi Client Baru (SDK 2026)
 client = genai.Client(api_key=API_KEY)
 
-# 2. SYSTEM PROMPT (Logika Tetap Sesuai tukulkacang.github.io)
+# ====================== CONTRACT PARAMS ======================
+contract_params = {
+    "6E1": {"name": "EUR/USD", "inverse": False},
+    "6B1": {"name": "GBP/USD", "inverse": False},
+    "6A1": {"name": "AUD/USD", "inverse": False},
+    "6N1": {"name": "NZD/USD", "inverse": False},
+    "6C1": {"name": "USD/CAD", "inverse": True},
+    "6S1": {"name": "USD/CHF", "inverse": True},
+    "6J1": {"name": "USD/JPY", "inverse": True},
+    "GC1": {"name": "Gold", "inverse": False},
+    "SI1": {"name": "Silver", "inverse": False},
+    "CL1": {"name": "Crude Oil", "inverse": False},
+}
+
+# ====================== SYSTEM PROMPT (Paling Penting) ======================
 SYSTEM_PROMPT = """
-Kamu adalah AI Pakar Analisis Order Flow (Gemini 3 Flash). 
-Analisa screenshot TradingView berdasarkan parameter 'Futures OI-CVD Lab':
+Kamu adalah AI Master Analyst Futures OI + CVD Lab yang mengikuti persis framework dari https://tukulkacang.github.io/futures-oi-cvd-lab/
 
-LOGIKA UTAMA:
-- Long Build Up: Harga Naik + OI Naik (Tangga Hijau).
-- Short Build Up: Harga Turun + OI Naik (Tangga Hijau).
-- Long Unwinding: Harga Turun + OI Turun (Tangga Merah).
-- Short Covering: Harga Naik + OI Turun (Tangga Merah).
-- Absorption: CVD ekstrim tapi harga stagnan/berlawanan.
+Analisa screenshot TradingView dengan teliti, lalu tentukan setup yang paling cocok dari 10 setup berikut:
 
-TUGAS: Berikan estimasi Entry, SL, dan TP berdasarkan angka di sumbu kanan chart.
+### 10 SETUP UTAMA:
+1. Strong Bullish Trend (Long Build Up)
+2. Strong Bearish Trend (Short Build Up)
+3. Bullish Divergence Reversal
+4. Bearish Divergence Reversal
+5. Valid Breakout Long
+6. Valid Breakdown Short
+7. Accumulation Phase (Long)
+8. Distribution Phase (Short)
+9. Weak Rally / Short Covering
+10. Trend Exhaustion (Exit Signal)
 
-OUTPUT FORMAT (Wajib JSON):
+### LOGIKA ANALISA WAJIB:
+- Long Build Up: Harga ↑ + OI ↑ (fresh longs)
+- Short Build Up: Harga ↓ + OI ↑ (fresh shorts)
+- Long Unwinding: Harga ↓ + OI ↓
+- Short Covering: Harga ↑ + OI ↓
+- Perhatikan kekuatan CVD (Cumulative Volume Delta)
+- Untuk simbol inverse (6C1,6S1,6J1): price naik = base currency (CAD/CHF/JPY) menguat
+
+Tugasmu:
+- Pilih **satu setup** yang paling matching
+- Berikan Entry, SL, TP berdasarkan level harga di chart
+- Signal hanya: BUY / SELL / WAIT
+
+**Output WAJIB JSON:**
 {
-  "market_state": "...",
-  "logic_match": "...",
+  "setup_id": 1,
+  "market_state": "Strong Bullish Trend",
+  "logic_match": "Penjelasan singkat kenapa cocok dengan setup ini",
   "trading_setup": {
-    "signal": "BUY/SELL/WAIT",
-    "entry": "...",
-    "sl": "...",
-    "tp": "..."
+    "signal": "BUY",
+    "entry": "1.0850",
+    "sl": "1.0815",
+    "tp": "1.0940"
   },
-  "risk_note": "..."
+  "checklist_match": "4/5 kondisi terpenuhi",
+  "risk_note": "Catatan risiko dan invalidasi",
+  "inverse_note": "Penjelasan jika simbol inverse"
 }
 """
 
-# 3. FUNGSI ANALISA (Migrasi ke Gemini 3 Flash)
-def analyze_chart(image_file):
+# ====================== FUNGSI ANALISA ======================
+def analyze_chart(image_file, symbol):
     img = Image.open(image_file)
     
-    # Menggunakan model gemini-3-flash yang lebih baru dan akurat
+    user_prompt = f"""
+Simbol yang dianalisa: {symbol} - {contract_params.get(symbol, {}).get('name', symbol)}
+Mohon analisa chart ini sesuai 10 setup di atas.
+"""
+
+    contents = [
+        {"role": "user", "parts": [SYSTEM_PROMPT]},
+        {"role": "user", "parts": [user_prompt]},
+        {"role": "user", "parts": [img]}
+    ]
+    
     response = client.models.generate_content(
         model="gemini-3-flash-preview",
-        contents=[SYSTEM_PROMPT, img],
+        contents=contents,
         config={
             "response_mime_type": "application/json",
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_output_tokens": 2000,
         }
     )
     return json.loads(response.text)
 
-# 4. UI STREAMLIT (Fix Deprecated use_container_width)
+# ====================== MAIN UI ======================
 def main():
-    st.title("🎯 AI Order Flow Analyst v3")
-    st.caption("Cak To Aja - 2026 Edition") # Identitas user
+    st.title("📊 OI + CVD Futures Lab AI")
+    st.caption("Cak To Aja - Versi AI • Mengikuti tukulkacang.github.io")
+
+    # Symbol Selector
+    symbol = st.selectbox(
+        "🎯 Pilih Instrumen",
+        options=list(contract_params.keys()),
+        format_func=lambda x: f"{x} — {contract_params[x]['name']}"
+    )
+
+    if contract_params[symbol]["inverse"]:
+        st.warning("⚠️ **INVERSE Pair** - Price naik di chart = mata uang base menguat")
+
     st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
         st.header("📤 Upload Chart")
-        uploaded_file = st.file_uploader("Upload screenshot TradingView", type=['png', 'jpg', 'jpeg'])
-        
+        uploaded_file = st.file_uploader("Upload Screenshot TradingView", 
+                                       type=['png', 'jpg', 'jpeg', 'webp'])
+
         if uploaded_file:
-            # Update 2026: use_container_width diganti width='stretch'
-            st.image(uploaded_file, caption="Chart Original", width='stretch')
+            st.image(uploaded_file, caption="Chart yang diupload", use_container_width=True)
 
     with col2:
-        st.header("🤖 Gemini 3 Analysis")
+        st.header("🤖 AI Analysis Result")
         if uploaded_file:
-            if st.button("Jalankan Analisa 10/10", type="primary"):
+            if st.button("🚀 Jalankan Analisa OI-CVD", type="primary", use_container_width=True):
                 try:
-                    with st.spinner("Memproses dengan Gemini 3 Flash..."):
-                        result = analyze_chart(uploaded_file)
-                    
-                    st.success(f"**STATUS: {result['market_state']}**")
-                    
-                    st.markdown("### ⚡ SIGNAL: " + result['trading_setup']['signal'])
-                    
+                    with st.spinner("AI sedang menganalisa chart..."):
+                        result = analyze_chart(uploaded_file, symbol)
+
+                    # Tampilkan Hasil
+                    st.success(f"**{result.get('market_state', 'Analysis Complete')}**")
+
+                    signal = result['trading_setup']['signal']
+                    if signal == "BUY":
+                        st.markdown(f"### 🟢 **SIGNAL: BUY**")
+                    elif signal == "SELL":
+                        st.markdown(f"### 🔴 **SIGNAL: SELL**")
+                    else:
+                        st.markdown(f"### ⚪ **SIGNAL: WAIT**")
+
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("ENTRY", result['trading_setup']['entry'])
-                    c2.metric("STOP LOSS", result['trading_setup']['sl'])
-                    c3.metric("TAKE PROFIT", result['trading_setup']['tp'])
+                    c1.metric("ENTRY", result['trading_setup'].get('entry', '-'))
+                    c2.metric("STOP LOSS", result['trading_setup'].get('sl', '-'))
+                    c3.metric("TAKE PROFIT", result['trading_setup'].get('tp', '-'))
 
-                    st.info(f"**Risk Note:** {result['risk_note']}")
+                    st.markdown("**Logic Match:**")
+                    st.info(result.get('logic_match', ''))
 
+                    st.markdown("**Checklist Match:**")
+                    st.write(result.get('checklist_match', ''))
+
+                    if result.get('risk_note'):
+                        st.warning(f"**Risk Note:** {result['risk_note']}")
+
+                    if result.get('inverse_note'):
+                        st.error(f"**Inverse Note:** {result['inverse_note']}")
+
+                except json.JSONDecodeError:
+                    st.error("AI tidak mengembalikan format JSON yang valid.")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Terjadi error: {str(e)}")
         else:
-            st.info("Silakan upload chart dulu, bro.")
+            st.info("⬆️ Upload screenshot chart terlebih dahulu")
+
+    st.markdown("---")
+    st.caption("AI ini dilatih mengikuti 10 setup resmi dari Futures OI + CVD Lab")
 
 if __name__ == "__main__":
     main()
