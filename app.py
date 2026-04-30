@@ -13,9 +13,29 @@ st.set_page_config(
     layout="wide"
 )
 
-API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+import streamlit as st
+import google.generativeai as genai
+import os
+from PIL import Image
+import json
+
+# ==========================================
+# PERBAIKAN LOGIKA PEMANGGILAN KEY (NILAI 10/10)
+# ==========================================
+
+# 1. Cek di Secrets Streamlit (Untuk Online)
+if "GEMINI_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+# 2. Cek di Environment Variable (Untuk Lokal)
+elif os.getenv("GEMINI_API_KEY"):
+    API_KEY = os.getenv("GEMINI_API_KEY")
+else:
+    API_KEY = None
+
+# Jika Key tidak ditemukan, tampilkan instruksi alih-alih error mentah
 if not API_KEY:
-    st.error("API Key belum diset!")
+    st.warning("⚠️ API Key tidak terdeteksi di Secrets Streamlit.")
+    st.info("Pastikan di Dashboard Streamlit > Settings > Secrets, kamu sudah tulis: GEMINI_API_KEY = 'KUNCI_KAMU'")
     st.stop()
 
 genai.configure(api_key=API_KEY)
