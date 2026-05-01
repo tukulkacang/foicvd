@@ -3,6 +3,7 @@ from google import genai
 from PIL import Image
 import os
 import json
+import io
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -190,6 +191,7 @@ Jika tidak yakin atau simbol tidak ada di list, kembalikan symbol yang paling me
 
 def auto_detect_symbol(image_file):
     """Deteksi simbol dari screenshot chart secara otomatis."""
+    image_file.seek(0)  # reset pointer sebelum baca
     img    = Image.open(image_file)
     model  = pick_model()
     prompt = build_detect_prompt()
@@ -199,7 +201,9 @@ def auto_detect_symbol(image_file):
         contents=[prompt, img],
         config={"response_mime_type": "application/json", "temperature": 0.05, "max_output_tokens": 256}
     )
-    raw = response.text.strip()
+    raw = (response.text or "").strip()
+    if not raw:
+        raise ValueError("Model tidak mengembalikan respons untuk auto-detect")
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -345,6 +349,7 @@ Kembalikan HANYA JSON valid ini:
 
 # ====================== ANALYZE ONE CHART ======================
 def analyze_chart(image_file, symbol):
+    image_file.seek(0)  # reset pointer sebelum baca
     img     = Image.open(image_file)
     prompt  = build_system_prompt(symbol)
     info    = contract_params.get(symbol, {})
@@ -357,7 +362,9 @@ def analyze_chart(image_file, symbol):
         contents=[prompt, user_msg, img],
         config={"response_mime_type": "application/json", "temperature": 0.05, "max_output_tokens": 2048}
     )
-    raw = response.text.strip()
+    raw = (response.text or "").strip()
+    if not raw:
+        raise ValueError(f"Model tidak mengembalikan respons untuk {symbol}")
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -645,6 +652,7 @@ def main():
             cols = st.columns(min(len(uploaded_files), 3))
             for i, f in enumerate(uploaded_files):
                 with cols[i % 3]:
+                    f.seek(0)  # reset sebelum preview
                     st.image(f, width="stretch", caption=f.name)
 
                     if auto_detect_all:
@@ -673,29 +681,34 @@ def main():
                 for i, f in enumerate(uploaded_files):
                     sym = symbol_assignments[i]
                     progress_bar.progress(
-                        (i) / len(uploaded_files),
+                        i / len(uploaded_files),
                         text=f"Menganalisa chart {i+1}/{len(uploaded_files)}..."
                     )
 
                     try:
+                        # Baca bytes sekali, simpan — hindari file pointer habis
+                        f.seek(0)
+                        file_bytes = f.read()
+
+
                         # Auto-detect jika dipilih
                         if sym == "🔎 Auto-detect":
                             with st.spinner(f"Mendeteksi simbol chart {i+1}..."):
-                                detect = auto_detect_symbol(f)
+                                detect = auto_detect_symbol(io.BytesIO(file_bytes))
                                 sym    = detect.get("symbol", "6E1")
                                 st.toast(f"Chart {i+1} terdeteksi: **{sym}**")
 
                         with st.spinner(f"Menganalisa {sym}..."):
-                            result, model_used = analyze_chart(f, sym)
+                            result, model_used = analyze_chart(io.BytesIO(file_bytes), sym)
 
                         score = calculate_score(result, sym)
                         all_results.append({
-                            "file":       f,
+                            "file":       io.BytesIO(file_bytes),  # fresh copy untuk display
                             "symbol":     sym,
                             "result":     result,
                             "model":      model_used,
                             "score":      score,
-                            "image":      f,
+                            "image":      io.BytesIO(file_bytes),
                         })
 
                     except Exception as e:
