@@ -23,7 +23,7 @@ if not API_KEY:
 
 client = genai.Client(api_key=API_KEY)
 
-# ── Cari model yang tersedia (cached) ──
+# ── Model picker ──
 @st.cache_data(show_spinner=False)
 def get_available_models():
     try:
@@ -33,9 +33,8 @@ def get_available_models():
         return [str(e)]
 
 def pick_model():
-    """Pilih model Gemini terbaik yang tersedia dari API key ini."""
     priority = [
-        "models/gemini-3-flash-preview",   # yang kemarin jalan di API key ini
+        "models/gemini-3-flash-preview",
         "models/gemini-3-pro-preview",
         "models/gemini-3.1-flash-lite-preview",
         "models/gemini-2.5-flash",
@@ -47,11 +46,10 @@ def pick_model():
     for m in priority:
         if m in available:
             return m
-    # fallback: ambil model pertama yang ada flash/pro
     for m in available:
         if "flash" in m or "pro" in m:
             return m
-    return "models/gemini-2.0-flash"  # last resort
+    return "models/gemini-3-flash-preview"
 
 # ====================== CONTRACT PARAMS ======================
 contract_params = {
@@ -152,6 +150,61 @@ def get_win_rate(setup_id, symbol):
     base = BASE_WIN_RATES.get(setup_id, 60)
     adj  = contract_params[symbol].get("winRateAdj", 0)
     return min(85, max(40, base + adj))
+
+# ====================== CONVERT INVERSE PRICE ======================
+def convert_inverse_price(price_str, symbol):
+    """Konversi harga futures inverse (JPY/USD dll) ke harga forex retail (USD/JPY dll)"""
+    info = contract_params.get(symbol, {})
+    if not info.get("inverseQuote"):
+        return None
+    try:
+        price = float(price_str)
+        if price <= 0:
+            return None
+        converted = 1 / price
+        # Format tergantung pair
+        base = info.get("baseAsli", "")
+        if base == "JPY":
+            return f"{converted:.2f}"
+        elif base in ["CAD", "CHF"]:
+            return f"{converted:.4f}"
+        else:
+            return f"{converted:.5f}"
+    except Exception:
+        return None
+
+# ====================== AUTO DETECT SYMBOL ======================
+def build_detect_prompt():
+    symbols = list(contract_params.keys())
+    return f"""
+Kamu adalah sistem pendeteksi simbol futures.
+Lihat screenshot chart TradingView dan identifikasi simbol futures yang ditampilkan.
+Kembalikan HANYA JSON ini:
+{{
+  "symbol": "<salah satu dari: {', '.join(symbols)}>",
+  "confidence": <60-99>,
+  "reason": "<kenapa kamu yakin ini simbolnya, sebutkan tanda yang kamu lihat di chart>"
+}}
+Jika tidak yakin atau simbol tidak ada di list, kembalikan symbol yang paling mendekati dari list di atas.
+"""
+
+def auto_detect_symbol(image_file):
+    """Deteksi simbol dari screenshot chart secara otomatis."""
+    img    = Image.open(image_file)
+    model  = pick_model()
+    prompt = build_detect_prompt()
+
+    response = client.models.generate_content(
+        model=model,
+        contents=[prompt, img],
+        config={"response_mime_type": "application/json", "temperature": 0.05, "max_output_tokens": 256}
+    )
+    raw = response.text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
 
 # ====================== SYSTEM PROMPT ======================
 def build_system_prompt(symbol):
@@ -260,23 +313,21 @@ Entry: Rejection candle resistance + CVD drop | SL: Atas range high
 - Rally menuju resistance/Fibonacci
 - Volume menurun selama rally
 Entry: Short di resistance dengan rejection | SL: +0.5% atas resistance
-PERINGATAN: Rentan short squeeze, gunakan SL ketat.
 
 [SETUP 10] Trend Exhaustion | EXIT SIGNAL | Akurasi ~{get_win_rate(10,symbol)}%
 - OI drop >{p['oiExhaust']}% dari puncak = long liquidation massal
-- CVD divergence: price naik tapi CVD flat/turun = buyers habis
+- CVD divergence: price naik tapi CVD flat/turun
 - Volatilitas menurun, candle mengecil
-- Volume spike tanpa follow-through
-PENTING: INI BUKAN SETUP ENTRY. Signal harus NO_ENTRY. Rekomendasikan exit/kurangi posisi.
+PENTING: INI BUKAN ENTRY. Signal = NO_ENTRY. Rekomendasikan exit posisi.
 
 === OUTPUT JSON ===
-Kembalikan HANYA JSON valid ini tanpa teks lain:
+Kembalikan HANYA JSON valid ini:
 {{
   "setup_id": <1-10>,
   "market_state": "<nama setup>",
   "setup_type": "<BULLISH|BEARISH|NEUTRAL|EXIT>",
-  "logic_match": "<jelaskan OI/CVD/Price yang terlihat di chart>",
-  "checklist_match": "<kondisi mana yang terpenuhi>",
+  "logic_match": "<jelaskan OI/CVD/Price yang terlihat>",
+  "checklist_match": "<kondisi yang terpenuhi>",
   "trading_setup": {{
     "signal": "<BUY|SELL|NO_ENTRY>",
     "entry": "<harga>",
@@ -288,32 +339,24 @@ Kembalikan HANYA JSON valid ini tanpa teks lain:
   "confidence": <40-95>,
   "risk_note": "<kondisi invalidasi>",
   "inverse_note": "<isi jika inverse, kosongkan jika tidak>",
-  "forex_recommendation": "<isi jika inverse, kosongkan jika tidak>"
+  "forex_recommendation": "<isi jika inverse contoh: LONG JPY / USD/JPY TURUN, kosongkan jika tidak>"
 }}
 """
 
-# ====================== ANALYZE ======================
+# ====================== ANALYZE ONE CHART ======================
 def analyze_chart(image_file, symbol):
-    img    = Image.open(image_file)
-    prompt = build_system_prompt(symbol)
-    info   = contract_params.get(symbol, {})
-    model  = pick_model()
+    img     = Image.open(image_file)
+    prompt  = build_system_prompt(symbol)
+    info    = contract_params.get(symbol, {})
+    model   = pick_model()
 
-    user_msg = (
-        f"Analisa chart ini untuk {symbol} ({info.get('name')}, {info.get('pair')}).\n"
-        f"Identifikasi setup OI+CVD yang paling cocok dan kembalikan JSON."
-    )
+    user_msg = f"Analisa chart ini untuk {symbol} ({info.get('name')}, {info.get('pair')}) dan kembalikan JSON."
 
     response = client.models.generate_content(
         model=model,
         contents=[prompt, user_msg, img],
-        config={
-            "response_mime_type": "application/json",
-            "temperature": 0.05,
-            "max_output_tokens": 2048,
-        }
+        config={"response_mime_type": "application/json", "temperature": 0.05, "max_output_tokens": 2048}
     )
-
     raw = response.text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -321,151 +364,418 @@ def analyze_chart(image_file, symbol):
             raw = raw[4:]
     return json.loads(raw.strip()), model
 
+# ====================== SCORE CALCULATOR ======================
+def calculate_score(result, symbol):
+    """
+    Hitung skor potensi setup untuk ranking.
+    Faktor: confidence AI + win rate sistem + bonus setup high-prob + penalti setup berisiko
+    """
+    confidence = result.get("confidence", 50)
+    setup_id   = result.get("setup_id", 0)
+    wr         = get_win_rate(setup_id, symbol)
+    signal     = result["trading_setup"]["signal"]
+
+    if signal == "NO_ENTRY":
+        return 0  # setup exit tidak diranking
+
+    # Skor dasar = rata-rata confidence AI dan win rate sistem
+    score = (confidence * 0.6) + (wr * 0.4)
+
+    # Bonus untuk high-prob setups (1,2,5,6)
+    if setup_id in [1, 2, 5, 6]:
+        score += 5
+
+    # Bonus kecil untuk reversal setup dengan konfirmasi kuat
+    if setup_id in [3, 4] and confidence >= 75:
+        score += 3
+
+    # Penalti setup berisiko tinggi
+    if setup_id == 9:
+        score -= 15
+
+    # Penalti untuk akumulasi/distribusi (medium prob)
+    if setup_id in [7, 8]:
+        score -= 5
+
+    return round(score, 1)
+
+# ====================== DISPLAY ONE RESULT ======================
+def display_result(result, symbol, rank=None, model_used=None):
+    info      = contract_params.get(symbol, {})
+    setup_id  = result.get("setup_id", 0)
+    setup_type = result.get("setup_type", "")
+    signal    = result["trading_setup"]["signal"]
+    confidence = result.get("confidence", 75)
+
+    # ── Header rank ──
+    if rank:
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
+        st.markdown(f"### {medal} Rank #{rank} — {symbol} ({info.get('name')})")
+        score = calculate_score(result, symbol)
+        st.caption(f"Skor Potensi: **{score}** | Model: `{model_used or pick_model()}`")
+    else:
+        st.caption(f"Model: `{model_used or pick_model()}`")
+
+    # ── Setup state ──
+    if setup_type == "BULLISH":
+        st.success(f"📈 **{result.get('market_state')}** (Setup #{setup_id})")
+    elif setup_type == "BEARISH":
+        st.error(f"📉 **{result.get('market_state')}** (Setup #{setup_id})")
+    elif setup_type == "EXIT":
+        st.warning(f"🚪 **{result.get('market_state')}** — EXIT SIGNAL")
+    else:
+        st.info(f"🔄 **{result.get('market_state')}** (Setup #{setup_id})")
+
+    # ── Signal ──
+    if signal == "NO_ENTRY":
+        st.warning("⛔ **NO ENTRY** — Kurangi/close posisi yang ada.")
+    else:
+        emoji = "🟢" if signal == "BUY" else "🔴"
+        st.markdown(f"**{emoji} Futures Signal: {signal} {symbol}**")
+        if result.get("forex_recommendation"):
+            st.markdown(f"**🔄 Forex Equivalent: {result['forex_recommendation']}**")
+
+    # ── Entry / SL ──
+    entry = result["trading_setup"].get("entry", "-")
+    sl    = result["trading_setup"].get("sl",    "-")
+    tp1   = result["trading_setup"].get("tp1",   "-")
+    tp2   = result["trading_setup"].get("tp2",   "-")
+    tp3   = result["trading_setup"].get("tp3",   "-")
+
+    # Konversi harga untuk inverse pair
+    if info.get("inverseQuote"):
+        pair_forex = info["pairForex"]
+        entry_conv = convert_inverse_price(entry, symbol)
+        sl_conv    = convert_inverse_price(sl,    symbol)
+        tp1_conv   = convert_inverse_price(tp1,   symbol)
+        tp2_conv   = convert_inverse_price(tp2,   symbol)
+        tp3_conv   = convert_inverse_price(tp3,   symbol)
+
+        c1, c2 = st.columns(2)
+        c1.metric("📍 ENTRY (Futures)", entry,
+                  delta=f"{pair_forex}: {entry_conv}" if entry_conv else None,
+                  delta_color="off")
+        c2.metric("🛑 SL (Futures)", sl,
+                  delta=f"{pair_forex}: {sl_conv}" if sl_conv else None,
+                  delta_color="off")
+
+        st.markdown("**🎯 Take Profit:**")
+        tp_c1, tp_c2, tp_c3 = st.columns(3)
+        tp_c1.metric("TP1", tp1, delta=f"{pair_forex}: {tp1_conv}" if tp1_conv else None, delta_color="off")
+        tp_c2.metric("TP2", tp2, delta=f"{pair_forex}: {tp2_conv}" if tp2_conv else None, delta_color="off")
+        tp_c3.metric("TP3", tp3, delta=f"{pair_forex}: {tp3_conv}" if tp3_conv else None, delta_color="off")
+    else:
+        c1, c2 = st.columns(2)
+        c1.metric("📍 ENTRY", entry)
+        c2.metric("🛑 STOP LOSS", sl)
+
+        st.markdown("**🎯 Take Profit:**")
+        tp_c1, tp_c2, tp_c3 = st.columns(3)
+        tp_c1.metric("TP1", tp1)
+        tp_c2.metric("TP2", tp2)
+        tp_c3.metric("TP3", tp3)
+
+    # ── Confidence ──
+    st.metric("🎯 Confidence AI", f"{confidence}%")
+    st.progress(confidence / 100)
+
+    if setup_id in BASE_WIN_RATES:
+        wr    = get_win_rate(setup_id, symbol)
+        label = "Akurasi sinyal exit" if setup_id == 10 else "Win Rate referensi sistem"
+        st.caption(f"📊 {label} Setup #{setup_id} untuk {symbol}: **{wr}%**")
+
+    # ── Logic & Risk ──
+    with st.expander("📊 Detail Analisa AI"):
+        st.info(result.get("logic_match", "-"))
+        st.caption(f"✅ Checklist: {result.get('checklist_match', '-')}")
+        if result.get("risk_note"):
+            st.warning(f"⚠️ **Risk / Invalidation:** {result['risk_note']}")
+        if result.get("inverse_note"):
+            st.error(f"🔄 **INVERSE NOTE:** {result['inverse_note']}")
+
 # ====================== MAIN APP ======================
 def main():
     st.title("📊 OI + CVD Futures Lab AI")
-    st.caption("Cak To Aja • Powered by Gemini • Full Setup Logic")
+    st.caption("Cak To Aja • Powered by Gemini • Auto-Detect + Multi-Chart Ranking")
 
+    # ── Sidebar ──
     with st.sidebar:
-        st.header("⚙️ Instrumen")
-        symbol = st.selectbox(
-            "🎯 Pilih Simbol",
-            options=list(contract_params.keys()),
-            format_func=lambda x: f"{x} — {contract_params[x]['name']}"
+        st.header("⚙️ Mode Analisa")
+
+        mode = st.radio(
+            "Pilih Mode:",
+            ["🔍 Single Chart", "📊 Multi Chart + Ranking"],
+            index=0
         )
-        info = contract_params[symbol]
-        p    = get_params(symbol)
 
         st.markdown("---")
-        st.markdown("**📋 Parameter Aktif:**")
-        st.markdown(f"- OI Spike min: **+{p['oiSpike']}%**")
-        st.markdown(f"- OI ROC/bar: **>{p['oiROC']}%**")
-        st.markdown(f"- CVD Multiplier: **≥{p['cvdMult']}×**")
-        st.markdown(f"- OI Exhaust: **>{p['oiExhaust']}% dari puncak**")
-        st.markdown(f"- TF Rekomendasi: **{p['tf']}**")
-        st.caption(p["note"])
-
-        if info.get("inverseQuote"):
-            st.markdown("---")
-            st.warning(
-                f"⚠️ **INVERSE PAIR**\n\n"
-                f"Kontrak: **{info['baseAsli']}/USD**\n\n"
-                f"📈 Price naik → {info['descNaik']}\n\n"
-                f"📉 Price turun → {info['descTurun']}"
-            )
-
-        # ── Debug: lihat model tersedia ──
-        st.markdown("---")
+        st.markdown("**🔧 Tools**")
         if st.button("🔍 Cek Model Tersedia"):
             with st.spinner("Mengambil daftar model..."):
                 models = get_available_models()
             st.code("\n".join(models))
-            st.caption(f"Model yang akan dipakai: **{pick_model()}**")
+            st.caption(f"Model aktif: **{pick_model()}**")
 
-    # ── Banner inverse ──
-    if info.get("inverseQuote"):
-        st.error(
-            f"⚠️ **INVERSE PAIR** — {symbol} adalah kontrak {info['baseAsli']}/USD. "
-            f"Price NAIK = **{info['baseAsli']} menguat** = **{info['pairForex']} TURUN**."
+    # ═══════════════════════════════════════
+    # MODE 1: SINGLE CHART
+    # ═══════════════════════════════════════
+    if mode == "🔍 Single Chart":
+        st.header("🔍 Analisa Single Chart")
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("📤 Upload Chart")
+            uploaded_file = st.file_uploader(
+                "Upload Screenshot", type=["png", "jpg", "jpeg", "webp"], key="single"
+            )
+
+            if uploaded_file:
+                st.image(uploaded_file, width="stretch")
+
+                # Auto-detect simbol
+                st.markdown("---")
+                st.markdown("**🤖 Auto-Detect Simbol:**")
+                col_auto, col_manual = st.columns([1, 1])
+
+                with col_auto:
+                    if st.button("🔎 Detect Otomatis"):
+                        with st.spinner("Mendeteksi simbol..."):
+                            try:
+                                detect = auto_detect_symbol(uploaded_file)
+                                detected_sym = detect.get("symbol", "6E1")
+                                st.session_state["detected_symbol"] = detected_sym
+                                st.success(f"Terdeteksi: **{detected_sym}** ({contract_params[detected_sym]['name']}) — {detect.get('confidence')}% yakin")
+                                st.caption(detect.get("reason", ""))
+                            except Exception as e:
+                                st.error(f"Gagal detect: {e}")
+
+                # Pilih simbol (default ke hasil detect jika ada)
+                default_sym = st.session_state.get("detected_symbol", "6E1")
+                default_idx = list(contract_params.keys()).index(default_sym) if default_sym in contract_params else 0
+
+                symbol = st.selectbox(
+                    "🎯 Simbol (konfirmasi/ubah):",
+                    options=list(contract_params.keys()),
+                    index=default_idx,
+                    format_func=lambda x: f"{x} — {contract_params[x]['name']}",
+                    key="single_symbol"
+                )
+
+                info = contract_params[symbol]
+                p    = get_params(symbol)
+
+                # Info parameter
+                with st.expander("📋 Parameter Aktif"):
+                    st.markdown(f"- OI Spike min: **+{p['oiSpike']}%**")
+                    st.markdown(f"- CVD Multiplier: **≥{p['cvdMult']}×**")
+                    st.markdown(f"- OI Exhaust: **>{p['oiExhaust']}%**")
+                    st.markdown(f"- TF: **{p['tf']}**")
+                    st.caption(p["note"])
+
+                if info.get("inverseQuote"):
+                    st.warning(
+                        f"⚠️ **INVERSE** — Kontrak: {info['baseAsli']}/USD\n\n"
+                        f"📈 Price naik → {info['descNaik']}\n\n"
+                        f"📉 Price turun → {info['descTurun']}"
+                    )
+
+        with col2:
+            st.subheader("🤖 Hasil Analisa")
+            if uploaded_file:
+                if info.get("inverseQuote"):
+                    st.error(
+                        f"⚠️ **INVERSE** — {symbol} = kontrak {info['baseAsli']}/USD. "
+                        f"Price NAIK = {info['baseAsli']} menguat = {info['pairForex']} TURUN."
+                    )
+
+                if st.button("🚀 Jalankan Analisa", type="primary", key="btn_single"):
+                    try:
+                        with st.spinner("AI menganalisa..."):
+                            result, model_used = analyze_chart(uploaded_file, symbol)
+                        display_result(result, symbol, model_used=model_used)
+
+                        # Simpan history
+                        if "history" not in st.session_state:
+                            st.session_state.history = []
+                        signal = result["trading_setup"]["signal"]
+                        st.session_state.history.append({
+                            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "symbol":       symbol,
+                            "setup_id":     result.get("setup_id"),
+                            "market_state": result.get("market_state"),
+                            "signal":       signal,
+                            "entry":        result["trading_setup"].get("entry", "-"),
+                            "sl":           result["trading_setup"].get("sl",    "-"),
+                            "tp1":          result["trading_setup"].get("tp1",   "-"),
+                            "confidence":   result.get("confidence", 75),
+                            "forex_rec":    result.get("forex_recommendation", ""),
+                            "score":        calculate_score(result, symbol),
+                        })
+
+                    except json.JSONDecodeError as e:
+                        st.error(f"❌ JSON tidak valid: {e}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+            else:
+                st.info("👆 Upload screenshot chart dulu.\nPastikan OI + CVD + Price terlihat semua.")
+
+    # ═══════════════════════════════════════
+    # MODE 2: MULTI CHART + RANKING
+    # ═══════════════════════════════════════
+    else:
+        st.header("📊 Multi Chart + Ranking Potensi")
+        st.caption("Upload beberapa chart sekaligus — AI akan menganalisa semua dan meranking dari yang paling potensial.")
+
+        # Upload multiple files
+        uploaded_files = st.file_uploader(
+            "Upload Screenshots (bisa lebih dari 1)",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="multi"
         )
 
-    col1, col2 = st.columns([1, 1])
+        if uploaded_files:
+            st.markdown(f"**{len(uploaded_files)} chart diupload.** Konfirmasi simbol masing-masing:")
 
-    with col1:
-        st.header("📤 Upload Chart")
-        st.caption("Screenshot TradingView — OI + CVD + Price harus terlihat semua")
-        uploaded_file = st.file_uploader("Upload Screenshot", type=["png", "jpg", "jpeg", "webp"])
-        if uploaded_file:
-            st.image(uploaded_file, width="stretch")
+            # Assign simbol per file
+            symbol_assignments = {}
+            auto_detect_all = st.checkbox("🤖 Auto-detect semua simbol", value=True)
 
-    with col2:
-        st.header("🤖 AI Analysis")
-        if uploaded_file:
-            if st.button("🚀 Jalankan Analisa OI-CVD", type="primary"):
-                try:
-                    with st.spinner("AI menganalisa OI + CVD + Price..."):
-                        result, used_model = analyze_chart(uploaded_file, symbol)
+            cols = st.columns(min(len(uploaded_files), 3))
+            for i, f in enumerate(uploaded_files):
+                with cols[i % 3]:
+                    st.image(f, width="stretch", caption=f.name)
 
-                    st.caption(f"Model: `{used_model}`")
-
-                    setup_type = result.get("setup_type", "")
-                    signal     = result["trading_setup"]["signal"]
-                    setup_id   = result.get("setup_id", 0)
-
-                    if setup_type == "BULLISH":
-                        st.success(f"📈 **{result.get('market_state')}** (Setup #{setup_id})")
-                    elif setup_type == "BEARISH":
-                        st.error(f"📉 **{result.get('market_state')}** (Setup #{setup_id})")
-                    elif setup_type == "EXIT":
-                        st.warning(f"🚪 **{result.get('market_state')}** — EXIT SIGNAL, jangan entry baru!")
+                    if auto_detect_all:
+                        # Default ke deteksi nanti saat analisa
+                        sym = st.selectbox(
+                            f"Simbol {i+1}:",
+                            options=["🔎 Auto-detect"] + list(contract_params.keys()),
+                            key=f"sym_{i}",
+                            format_func=lambda x: x if x == "🔎 Auto-detect" else f"{x} — {contract_params[x]['name']}"
+                        )
                     else:
-                        st.info(f"🔄 **{result.get('market_state')}** (Setup #{setup_id})")
+                        sym = st.selectbox(
+                            f"Simbol {i+1}:",
+                            options=list(contract_params.keys()),
+                            key=f"sym_{i}",
+                            format_func=lambda x: f"{x} — {contract_params[x]['name']}"
+                        )
+                    symbol_assignments[i] = sym
 
-                    st.markdown("---")
-                    if signal == "NO_ENTRY":
-                        st.warning("⛔ **NO ENTRY** — Kurangi/close posisi yang ada.")
-                    else:
-                        emoji = "🟢" if signal == "BUY" else "🔴"
-                        st.markdown(f"### {emoji} Futures Signal: **{signal} {symbol}**")
-                        if result.get("forex_recommendation"):
-                            st.markdown(f"### 🔄 Forex Equivalent: **{result['forex_recommendation']}**")
+            st.markdown("---")
 
-                    st.markdown("---")
-                    c1, c2 = st.columns(2)
-                    c1.metric("📍 ENTRY",     result["trading_setup"].get("entry", "-"))
-                    c2.metric("🛑 STOP LOSS", result["trading_setup"].get("sl",    "-"))
+            if st.button("🚀 Analisa Semua & Ranking", type="primary", key="btn_multi"):
+                all_results = []
+                progress_bar = st.progress(0, text="Memulai analisa...")
 
-                    st.markdown("**🎯 Take Profit:**")
-                    tp1, tp2, tp3 = st.columns(3)
-                    tp1.metric("TP1", result["trading_setup"].get("tp1", "-"))
-                    tp2.metric("TP2", result["trading_setup"].get("tp2", "-"))
-                    tp3.metric("TP3", result["trading_setup"].get("tp3", "-"))
+                for i, f in enumerate(uploaded_files):
+                    sym = symbol_assignments[i]
+                    progress_bar.progress(
+                        (i) / len(uploaded_files),
+                        text=f"Menganalisa chart {i+1}/{len(uploaded_files)}..."
+                    )
 
-                    st.markdown("---")
-                    confidence = result.get("confidence", 75)
-                    st.metric("🎯 Confidence AI", f"{confidence}%")
-                    st.progress(confidence / 100)
+                    try:
+                        # Auto-detect jika dipilih
+                        if sym == "🔎 Auto-detect":
+                            with st.spinner(f"Mendeteksi simbol chart {i+1}..."):
+                                detect = auto_detect_symbol(f)
+                                sym    = detect.get("symbol", "6E1")
+                                st.toast(f"Chart {i+1} terdeteksi: **{sym}**")
 
-                    if setup_id in BASE_WIN_RATES:
-                        wr    = get_win_rate(setup_id, symbol)
-                        label = "Akurasi sinyal exit" if setup_id == 10 else "Win Rate referensi sistem"
-                        st.caption(f"📊 {label} Setup #{setup_id} untuk {symbol}: **{wr}%**")
+                        with st.spinner(f"Menganalisa {sym}..."):
+                            result, model_used = analyze_chart(f, sym)
 
-                    st.markdown("---")
-                    st.markdown("**📊 Analisa AI:**")
-                    st.info(result.get("logic_match", "-"))
-                    st.caption(f"✅ Checklist: {result.get('checklist_match', '-')}")
+                        score = calculate_score(result, sym)
+                        all_results.append({
+                            "file":       f,
+                            "symbol":     sym,
+                            "result":     result,
+                            "model":      model_used,
+                            "score":      score,
+                            "image":      f,
+                        })
 
-                    if result.get("risk_note"):
-                        st.warning(f"⚠️ **Risk / Invalidation:** {result['risk_note']}")
-                    if result.get("inverse_note"):
-                        st.error(f"🔄 **INVERSE NOTE:** {result['inverse_note']}")
+                    except Exception as e:
+                        st.warning(f"⚠️ Chart {i+1} ({sym}) gagal: {e}")
 
-                    # Simpan history
-                    if "history" not in st.session_state:
-                        st.session_state.history = []
+                progress_bar.progress(1.0, text="Analisa selesai!")
+
+                if not all_results:
+                    st.error("Semua analisa gagal. Coba lagi.")
+                    return
+
+                # Sort by score descending
+                all_results.sort(key=lambda x: x["score"], reverse=True)
+
+                # ── Tampilkan ranking ──
+                st.markdown("---")
+                st.subheader("🏆 Ranking Setup Paling Potensial")
+                st.caption("Diurutkan berdasarkan: Confidence AI × Win Rate Sistem × Bonus/Penalti Setup")
+
+                # Summary table dulu
+                st.markdown("**📋 Ringkasan:**")
+                summary_cols = st.columns([1, 2, 2, 2, 1, 1])
+                summary_cols[0].markdown("**Rank**")
+                summary_cols[1].markdown("**Simbol**")
+                summary_cols[2].markdown("**Setup**")
+                summary_cols[3].markdown("**Signal**")
+                summary_cols[4].markdown("**Conf.**")
+                summary_cols[5].markdown("**Skor**")
+
+                for rank, item in enumerate(all_results, 1):
+                    r      = item["result"]
+                    signal = r["trading_setup"]["signal"]
+                    medal  = {1:"🥇", 2:"🥈", 3:"🥉"}.get(rank, f"#{rank}")
+                    sig_em = "🟢" if signal=="BUY" else ("🔴" if signal=="SELL" else "⛔")
+                    cols   = st.columns([1, 2, 2, 2, 1, 1])
+                    cols[0].write(medal)
+                    cols[1].write(f"**{item['symbol']}** ({contract_params[item['symbol']]['name']})")
+                    cols[2].write(r.get("market_state", "-"))
+                    cols[3].write(f"{sig_em} {signal}")
+                    cols[4].write(f"{r.get('confidence')}%")
+                    cols[5].write(f"**{item['score']}**")
+
+                st.markdown("---")
+
+                # Detail tiap ranking
+                for rank, item in enumerate(all_results, 1):
+                    with st.expander(
+                        f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉' if rank==3 else f'#{rank}'} "
+                        f"Rank #{rank} — {item['symbol']} ({contract_params[item['symbol']]['name']}) "
+                        f"| Skor: {item['score']}",
+                        expanded=(rank <= 3)  # auto-expand top 3
+                    ):
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            st.image(item["image"], width="stretch")
+                        with c2:
+                            display_result(item["result"], item["symbol"], rank=rank, model_used=item["model"])
+
+                # Simpan ke history
+                if "history" not in st.session_state:
+                    st.session_state.history = []
+                for item in all_results:
+                    r = item["result"]
                     st.session_state.history.append({
                         "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "symbol":       symbol,
-                        "setup_id":     setup_id,
-                        "market_state": result.get("market_state"),
-                        "signal":       signal,
-                        "entry":        result["trading_setup"].get("entry", "-"),
-                        "sl":           result["trading_setup"].get("sl",    "-"),
-                        "tp1":          result["trading_setup"].get("tp1",   "-"),
-                        "confidence":   confidence,
-                        "forex_rec":    result.get("forex_recommendation", ""),
-                        "model":        used_model,
+                        "symbol":       item["symbol"],
+                        "setup_id":     r.get("setup_id"),
+                        "market_state": r.get("market_state"),
+                        "signal":       r["trading_setup"]["signal"],
+                        "entry":        r["trading_setup"].get("entry", "-"),
+                        "sl":           r["trading_setup"].get("sl",    "-"),
+                        "tp1":          r["trading_setup"].get("tp1",   "-"),
+                        "confidence":   r.get("confidence", 75),
+                        "forex_rec":    r.get("forex_recommendation", ""),
+                        "score":        item["score"],
                     })
 
-                except json.JSONDecodeError as e:
-                    st.error(f"❌ JSON tidak valid: {e}")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-        else:
-            st.info("👆 Upload screenshot chart dulu.\nPastikan panel OI + CVD + Price semua terlihat.")
-
-    # ── History ──
+    # ═══════════════════════════════════════
+    # HISTORY
+    # ═══════════════════════════════════════
     st.markdown("---")
     st.subheader("📜 Riwayat Analisa")
     if "history" in st.session_state and st.session_state.history:
@@ -473,15 +783,21 @@ def main():
         if col_clr.button("🗑️ Hapus Riwayat"):
             st.session_state.history = []
             st.rerun()
-        for item in reversed(st.session_state.history[-10:]):
-            sig_emoji = "🟢" if item["signal"] == "BUY" else ("🔴" if item["signal"] == "SELL" else "⛔")
+
+        # Sort history by score desc
+        sorted_hist = sorted(st.session_state.history, key=lambda x: x.get("score", 0), reverse=True)
+
+        for item in sorted_hist[-10:]:
+            sig_em    = "🟢" if item["signal"]=="BUY" else ("🔴" if item["signal"]=="SELL" else "⛔")
             forex_str = f" | 🔄 **{item['forex_rec']}**" if item.get("forex_rec") else ""
+            score_str = f" | Skor: **{item.get('score', '-')}**"
             st.markdown(
                 f"**{item['timestamp']}** — **{item['symbol']}** | "
                 f"Setup #{item.get('setup_id')} {item['market_state']}  \n"
-                f"{sig_emoji} **{item['signal']}** | "
+                f"{sig_em} **{item['signal']}** | "
                 f"Entry: `{item['entry']}` | SL: `{item['sl']}` | "
-                f"TP1: `{item.get('tp1')}` | Confidence: **{item['confidence']}%**{forex_str}"
+                f"TP1: `{item.get('tp1')}` | Conf: **{item['confidence']}%**"
+                f"{score_str}{forex_str}"
             )
             st.divider()
     else:
