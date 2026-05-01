@@ -35,8 +35,7 @@ def get_available_models():
 def pick_model():
     """Pilih model Gemini terbaik yang tersedia dari API key ini."""
     priority = [
-        "models/gemini-3.1-flash-lite",
-		"models/gemini-2.5-flash-preview-05-20",
+        "models/gemini-2.5-flash-preview-05-20",
         "models/gemini-2.5-flash-preview-04-17",
         "models/gemini-2.5-pro-preview-05-06",
         "models/gemini-2.0-flash",
@@ -383,7 +382,7 @@ def main():
     with col2:
         st.header("🤖 AI Analysis")
         if uploaded_file:
-            if st.button("🚀 Jalankan Analisa OI-CVD", type="primary", use_container_width=True):
+            if st.button("🚀 Jalankan Analisa OI-CVD", type="primary"):
                 try:
                     with st.spinner("AI menganalisa OI + CVD + Price..."):
                         result, used_model = analyze_chart(uploaded_file, symbol)
@@ -492,4 +491,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-	
