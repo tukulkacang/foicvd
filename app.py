@@ -301,7 +301,7 @@ def analyze_chart(image_file, symbol):
     )
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash-preview-05-20",
+        model="gemini-gemini-3-flash-preview",
         contents=[prompt, user_msg, img],
         config={
             "response_mime_type": "application/json",
