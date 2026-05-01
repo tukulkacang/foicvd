@@ -301,7 +301,7 @@ def analyze_chart(image_file, symbol):
     )
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash-preview-04-17",
+        model="gemini-2.5-flash-preview-05-20",
         contents=[prompt, user_msg, img],
         config={
             "response_mime_type": "application/json",
@@ -368,7 +368,7 @@ def main():
             "Upload Screenshot", type=["png", "jpg", "jpeg", "webp"]
         )
         if uploaded_file:
-            st.image(uploaded_file, use_container_width=True)
+            st.image(uploaded_file, width="stretch")
 
     with col2:
         st.header("🤖 AI Analysis")
