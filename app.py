@@ -35,14 +35,13 @@ def get_available_models():
 def pick_model():
     """Pilih model Gemini terbaik yang tersedia dari API key ini."""
     priority = [
-        "models/gemini-2.5-flash-preview-05-20",
-        "models/gemini-2.5-flash-preview-04-17",
-        "models/gemini-2.5-pro-preview-05-06",
+        "models/gemini-3-flash-preview",   # yang kemarin jalan di API key ini
+        "models/gemini-3-pro-preview",
+        "models/gemini-3.1-flash-lite-preview",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
         "models/gemini-2.0-flash",
-        "models/gemini-2.0-flash-001",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-flash-001",
-        "models/gemini-1.5-pro",
+        "models/gemini-2.0-flash-lite",
     ]
     available = get_available_models()
     for m in priority:
